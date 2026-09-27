@@ -5,7 +5,7 @@
 // http://opensource.org/licenses/MIT>, at your option. This file may not be
 // copied, modified, or distributed except according to those terms.
 
-use super::ff::Device as FfDevice;
+use super::ff::{Device as FfDevice, FF_RUMBLE};
 use super::ioctl;
 use super::ioctl::{input_absinfo, input_event};
 use super::udev::*;
@@ -702,7 +702,7 @@ impl Gamepad {
 
     fn test_ff(fd: i32) -> bool {
         unsafe {
-            let mut ff_bits = [0u8; (FF_MAX / 8) as usize + 1];
+            let mut ff_bits = [0u8; (FF_RUMBLE / 8) as usize + 1];
             if ioctl::eviocgbit(
                 fd,
                 u32::from(EV_FF),
@@ -710,10 +710,7 @@ impl Gamepad {
                 ff_bits.as_mut_ptr(),
             ) >= 0
             {
-                utils::test_bit(FF_SQUARE, &ff_bits)
-                    && utils::test_bit(FF_TRIANGLE, &ff_bits)
-                    && utils::test_bit(FF_SINE, &ff_bits)
-                    && utils::test_bit(FF_GAIN, &ff_bits)
+                supports_rumble(&ff_bits)
             } else {
                 false
             }
@@ -1205,11 +1202,9 @@ const ABS_HAT1Y: u16 = 0x13;
 const ABS_HAT2X: u16 = 0x14;
 const ABS_HAT2Y: u16 = 0x15;
 
-const FF_MAX: u16 = FF_GAIN;
-const FF_SQUARE: u16 = 0x58;
-const FF_TRIANGLE: u16 = 0x59;
-const FF_SINE: u16 = 0x5a;
-const FF_GAIN: u16 = 0x60;
+fn supports_rumble(ff_bits: &[u8]) -> bool {
+    utils::test_bit(FF_RUMBLE, ff_bits)
+}
 
 pub mod native_ev_codes {
     use super::*;
@@ -1346,6 +1341,20 @@ mod tests {
     use super::super::ioctl;
     use super::create_uuid;
     use uuid::Uuid;
+
+    #[test]
+    fn ff_support_requires_rumble() {
+        let mut ff_bits = [0u8; 13];
+        assert!(!super::supports_rumble(&ff_bits));
+
+        // Periodic effects alone cannot play gilrs' FF_RUMBLE effect.
+        ff_bits[0x58 / 8] |= 1 << (0x58 % 8);
+        assert!(!super::supports_rumble(&ff_bits));
+
+        ff_bits.fill(0);
+        ff_bits[(super::FF_RUMBLE / 8) as usize] |= 1 << (super::FF_RUMBLE % 8);
+        assert!(super::supports_rumble(&ff_bits));
+    }
 
     #[test]
     fn sdl_uuid() {

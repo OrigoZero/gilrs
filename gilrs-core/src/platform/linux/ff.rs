@@ -121,4 +121,4 @@ impl Drop for Device {
 }
 
 const EV_FF: u16 = 0x15;
-const FF_RUMBLE: u16 = 0x50;
+pub(super) const FF_RUMBLE: u16 = 0x50;
