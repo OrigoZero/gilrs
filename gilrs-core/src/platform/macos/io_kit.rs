@@ -322,6 +322,12 @@ pub const USAGE_AXIS_RT: u32 = 0; // unconfirmed
 pub const USAGE_AXIS_LT: u32 = 0; // unconfirmed
 pub const USAGE_AXIS_RT2: u32 = kHIDUsage_Sim_Accelerator;
 pub const USAGE_AXIS_LT2: u32 = kHIDUsage_Sim_Brake;
+// The dpad is usually a hat switch. They must not be on the Button page, gamepads
+// can have more than 15 buttons which would then be reported as dpad presses.
+pub const USAGE_BTN_DPAD_UP: u32 = kHIDUsage_GD_DPadUp;
+pub const USAGE_BTN_DPAD_DOWN: u32 = kHIDUsage_GD_DPadDown;
+pub const USAGE_BTN_DPAD_LEFT: u32 = kHIDUsage_GD_DPadLeft;
+pub const USAGE_BTN_DPAD_RIGHT: u32 = kHIDUsage_GD_DPadRight;
 
 // Button Page (0x09)
 pub const USAGE_BTN_SOUTH: u32 = kHIDUsage_Button_1;
@@ -337,9 +343,5 @@ pub const USAGE_BTN_START: u32 = kHIDUsage_Button_1 + 11;
 pub const USAGE_BTN_MODE: u32 = kHIDUsage_Button_1 + 12;
 pub const USAGE_BTN_LTHUMB: u32 = kHIDUsage_Button_1 + 13;
 pub const USAGE_BTN_RTHUMB: u32 = kHIDUsage_Button_1 + 14;
-pub const USAGE_BTN_DPAD_UP: u32 = kHIDUsage_Button_1 + 15; // unconfirmed
-pub const USAGE_BTN_DPAD_DOWN: u32 = kHIDUsage_Button_1 + 16; // unconfirmed
-pub const USAGE_BTN_DPAD_LEFT: u32 = kHIDUsage_Button_1 + 17; // unconfirmed
-pub const USAGE_BTN_DPAD_RIGHT: u32 = kHIDUsage_Button_1 + 18; // unconfirmed
 pub const USAGE_BTN_C: u32 = kHIDUsage_Button_1 + 19; // unconfirmed
 pub const USAGE_BTN_Z: u32 = kHIDUsage_Button_1 + 20; // unconfirmed

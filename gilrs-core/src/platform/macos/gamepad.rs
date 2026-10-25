@@ -612,19 +612,19 @@ pub mod native_ev_codes {
     };
 
     pub const BTN_DPAD_UP: EvCode = EvCode {
-        page: super::PAGE_BUTTON,
+        page: super::PAGE_GENERIC_DESKTOP,
         usage: super::USAGE_BTN_DPAD_UP,
     };
     pub const BTN_DPAD_DOWN: EvCode = EvCode {
-        page: super::PAGE_BUTTON,
+        page: super::PAGE_GENERIC_DESKTOP,
         usage: super::USAGE_BTN_DPAD_DOWN,
     };
     pub const BTN_DPAD_LEFT: EvCode = EvCode {
-        page: super::PAGE_BUTTON,
+        page: super::PAGE_GENERIC_DESKTOP,
         usage: super::USAGE_BTN_DPAD_LEFT,
     };
     pub const BTN_DPAD_RIGHT: EvCode = EvCode {
-        page: super::PAGE_BUTTON,
+        page: super::PAGE_GENERIC_DESKTOP,
         usage: super::USAGE_BTN_DPAD_RIGHT,
     };
 }
