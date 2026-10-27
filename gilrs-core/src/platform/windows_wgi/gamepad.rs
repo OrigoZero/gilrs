@@ -33,6 +33,8 @@ const SDL_HARDWARE_BUS_USB: u32 = 0x03;
 // means 8 ms between updates.
 // Seems like a good target for how often we update the background thread.
 const EVENT_THREAD_SLEEP_TIME: u64 = 8;
+// Battery info only needs to be polled sparingly: once per second.
+const ITERATIONS_TO_CHECK_BATTERY: u64 = 125;
 
 const WGI_TO_GILRS_BUTTON_MAP: [(GamepadButtons, crate::EvCode); 14] = [
     (GamepadButtons::DPadUp, nec::BTN_DPAD_UP),
@@ -113,8 +115,12 @@ impl Gilrs {
         let added_tx = tx.clone();
         let added_handler = EventHandler::<RawGameController>::new(move |_, g| {
             if let Some(g) = g.as_ref() {
+                let power = read_power_info(g);
                 added_tx
                     .send(WgiEvent::new(g.clone(), EventType::Connected))
+                    .expect("should be able to send to main thread");
+                added_tx
+                    .send(WgiEvent::new(g.clone(), EventType::BatteryChanged(power)))
                     .expect("should be able to send to main thread");
             }
             Ok(())
@@ -139,9 +145,10 @@ impl Gilrs {
             .spawn(move || {
                 let mut controllers: Vec<RawGameController> = Vec::new();
                 // To avoid allocating every update, store old and new readings for every controller
-                // and swap their memory
-                let mut readings: Vec<(HSTRING, Reading, Reading)> = Vec::new();
+                // and swap their memory. Also tracks last reported power state per controller.
+                let mut readings: Vec<(HSTRING, Reading, Reading, PowerInfo)> = Vec::new();
                 let mut last_failed_get_id: Option<Instant> = None;
+                let mut counter: u64 = 0;
                 loop {
                     match stop_rx.try_recv() {
                         Ok(_) => break,
@@ -190,19 +197,31 @@ impl Gilrs {
                                     _ => Reading::Raw(RawGamepadReading::new(controller).unwrap()),
                                 };
 
-                                readings.push((id, reading.clone(), reading));
+                                let initial_power = read_power_info(controller);
+                                readings.push((id, reading.clone(), reading, initial_power));
                                 readings.len() - 1
                             }
                             Some(i) => i,
                         };
 
-                        let (_, old_reading, new_reading) = &mut readings[index];
+                        let (_, old_reading, new_reading, last_power) = &mut readings[index];
 
                         // Make last update's reading the old reading and get a new one.
                         std::mem::swap(old_reading, new_reading);
                         if let Err(e) = new_reading.update(controller) {
                             if e.code().is_err() {
                                 error!("Reading::update() function failed with {e}");
+                            }
+                        }
+
+                        if counter % ITERATIONS_TO_CHECK_BATTERY == 0 {
+                            let current = read_power_info(controller);
+                            if current != *last_power {
+                                *last_power = current;
+                                let _ = tx.send(WgiEvent::new(
+                                    controller.clone(),
+                                    EventType::BatteryChanged(current),
+                                ));
                             }
                         }
 
@@ -218,6 +237,7 @@ impl Gilrs {
                             &tx,
                         );
                     }
+                    counter = counter.wrapping_add(1);
                     thread::sleep(Duration::from_millis(EVENT_THREAD_SLEEP_TIME));
                 }
 
@@ -307,6 +327,36 @@ impl Drop for Gilrs {
             warn!("Failed to join thread: {e:?}");
         }
     }
+}
+
+fn read_power_info(controller: &RawGameController) -> PowerInfo {
+    read_power_info_err(controller).unwrap_or(PowerInfo::Unknown)
+}
+
+fn read_power_info_err(controller: &RawGameController) -> windows::core::Result<PowerInfo> {
+    if !controller.IsWireless()? {
+        return Ok(PowerInfo::Wired);
+    }
+    let report: BatteryReport = controller.TryGetBatteryReport()?;
+    let status: BatteryStatus = report.Status()?;
+
+    let power_info = match status {
+        BatteryStatus::Discharging | BatteryStatus::Charging => {
+            let full = report.FullChargeCapacityInMilliwattHours()?.GetInt32()? as f32;
+            let remaining = report.RemainingCapacityInMilliwattHours()?.GetInt32()? as f32;
+            let percent: u8 = ((remaining / full) * 100.0) as u8;
+            match status {
+                _ if percent == 100 => PowerInfo::Charged,
+                BatteryStatus::Discharging => PowerInfo::Discharging(percent),
+                BatteryStatus::Charging => PowerInfo::Charging(percent),
+                _ => unreachable!(),
+            }
+        }
+        BatteryStatus::NotPresent => PowerInfo::Wired,
+        BatteryStatus::Idle => PowerInfo::Charged,
+        BatteryStatus(_) => PowerInfo::Unknown,
+    };
+    Ok(power_info)
 }
 
 #[derive(Debug, Clone)]
@@ -626,34 +676,7 @@ impl Gamepad {
     }
 
     pub fn power_info(&self) -> PowerInfo {
-        self.power_info_err().unwrap_or(PowerInfo::Unknown)
-    }
-
-    /// Using this function so we can easily map errors to unknown
-    fn power_info_err(&self) -> windows::core::Result<PowerInfo> {
-        if !self.raw_game_controller.IsWireless()? {
-            return Ok(PowerInfo::Wired);
-        }
-        let report: BatteryReport = self.raw_game_controller.TryGetBatteryReport()?;
-        let status: BatteryStatus = report.Status()?;
-
-        let power_info = match status {
-            BatteryStatus::Discharging | BatteryStatus::Charging => {
-                let full = report.FullChargeCapacityInMilliwattHours()?.GetInt32()? as f32;
-                let remaining = report.RemainingCapacityInMilliwattHours()?.GetInt32()? as f32;
-                let percent: u8 = ((remaining / full) * 100.0) as u8;
-                match status {
-                    _ if percent == 100 => PowerInfo::Charged,
-                    BatteryStatus::Discharging => PowerInfo::Discharging(percent),
-                    BatteryStatus::Charging => PowerInfo::Charging(percent),
-                    _ => unreachable!(),
-                }
-            }
-            BatteryStatus::NotPresent => PowerInfo::Wired,
-            BatteryStatus::Idle => PowerInfo::Charged,
-            BatteryStatus(_) => PowerInfo::Unknown,
-        };
-        Ok(power_info)
+        read_power_info(&self.raw_game_controller)
     }
 
     pub fn is_ff_supported(&self) -> bool {

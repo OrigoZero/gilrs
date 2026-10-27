@@ -363,6 +363,7 @@ impl Gilrs {
 
                             EventType::Disconnected
                         }
+                        RawEventType::BatteryChanged(info) => EventType::BatteryChanged(info),
                         _ => {
                             unimplemented!()
                         }
@@ -406,7 +407,11 @@ impl Gilrs {
                 data.state
                     .update_axis(nec, AxisData::new(value, counter, event.time));
             }
-            Disconnected | Connected | Dropped | ForceFeedbackEffectCompleted => (),
+            Disconnected
+            | Connected
+            | Dropped
+            | ForceFeedbackEffectCompleted
+            | BatteryChanged(_) => (),
         }
     }
 

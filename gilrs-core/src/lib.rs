@@ -57,6 +57,8 @@ pub enum EventType {
     AxisValueChanged(i32, EvCode),
     Connected,
     Disconnected,
+    /// Device's power supply state has changed.
+    BatteryChanged(PowerInfo),
 }
 
 /// Holds information about expected axis range and deadzone.
@@ -84,6 +86,7 @@ pub struct AxisInfo {
 /// };
 /// ```
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde-serialize", derive(Serialize, Deserialize))]
 pub enum PowerInfo {
     /// Failed to determine power status.
     Unknown,

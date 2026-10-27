@@ -176,6 +176,16 @@ impl Gilrs {
             self.event_cache.push_back(event);
         }
 
+        for (id, gamepad) in self.gamepads.iter_mut().enumerate() {
+            if !gamepad.connected {
+                continue;
+            }
+            if let Some(info) = gamepad.check_battery_change() {
+                self.event_cache
+                    .push_back(Event::new(id, EventType::BatteryChanged(info)));
+            }
+        }
+
         self.event_cache.pop_front()
     }
 
@@ -244,6 +254,7 @@ pub struct Gamepad {
     product: Option<u16>,
     mapping: Mapping,
     connected: bool,
+    last_power_info: PowerInfo,
 }
 
 impl Gamepad {
@@ -321,6 +332,17 @@ impl Gamepad {
             product,
             mapping,
             connected: true,
+            last_power_info: PowerInfo::Unknown,
+        }
+    }
+
+    fn check_battery_change(&mut self) -> Option<PowerInfo> {
+        let current = self.power_info();
+        if current != self.last_power_info {
+            self.last_power_info = current;
+            Some(current)
+        } else {
+            None
         }
     }
 

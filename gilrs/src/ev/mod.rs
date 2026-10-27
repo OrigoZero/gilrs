@@ -15,7 +15,7 @@ use std::{
     time::SystemTime,
 };
 
-use crate::{constants::*, gamepad::GamepadId, utils};
+use crate::{constants::*, gamepad::GamepadId, utils, PowerInfo};
 
 #[cfg(feature = "serde-serialize")]
 use serde::{Deserialize, Serialize};
@@ -106,6 +106,8 @@ pub enum EventType {
     Dropped,
     /// A force feedback effect has ran for its duration and stopped.
     ForceFeedbackEffectCompleted,
+    /// Device's power supply state has changed.
+    BatteryChanged(PowerInfo),
 }
 
 #[repr(u16)]

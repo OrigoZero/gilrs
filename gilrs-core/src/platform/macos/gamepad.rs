@@ -18,19 +18,24 @@ use objc2_io_kit::{
 use uuid::Uuid;
 use vec_map::VecMap;
 
+use std::collections::VecDeque;
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::os::raw::c_void;
 use std::ptr::NonNull;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+const BATTERY_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Debug)]
 pub struct Gilrs {
     gamepads: Vec<Gamepad>,
     device_infos: Arc<Mutex<Vec<DeviceInfo>>>,
     rx: Receiver<(Event, Option<Device>)>,
+    pending_events: VecDeque<Event>,
+    last_battery_check: Instant,
 }
 
 impl Gilrs {
@@ -45,6 +50,8 @@ impl Gilrs {
             gamepads,
             device_infos,
             rx,
+            pending_events: VecDeque::new(),
+            last_battery_check: Instant::now(),
         })
     }
 
@@ -94,18 +101,57 @@ impl Gilrs {
     }
 
     pub(crate) fn next_event(&mut self) -> Option<Event> {
+        if let Some(ev) = self.pending_events.pop_front() {
+            return Some(ev);
+        }
         let event = self.rx.try_recv().ok();
-        self.handle_event(event)
+        let translated = self.handle_event(event);
+        if translated.is_some() {
+            return translated;
+        }
+        self.poll_batteries();
+        self.pending_events.pop_front()
     }
 
     pub(crate) fn next_event_blocking(&mut self, timeout: Option<Duration>) -> Option<Event> {
-        let event = if let Some(timeout) = timeout {
-            self.rx.recv_timeout(timeout).ok()
-        } else {
-            self.rx.recv().ok()
-        };
+        let start = Instant::now();
+        loop {
+            if let Some(ev) = self.pending_events.pop_front() {
+                return Some(ev);
+            }
+            let wait = match timeout {
+                Some(t) => {
+                    let remaining = t.saturating_sub(start.elapsed());
+                    if remaining.is_zero() {
+                        self.poll_batteries();
+                        return self.pending_events.pop_front();
+                    }
+                    remaining.min(BATTERY_POLL_INTERVAL)
+                }
+                None => BATTERY_POLL_INTERVAL,
+            };
+            let event = self.rx.recv_timeout(wait).ok();
+            if let Some(ev) = self.handle_event(event) {
+                return Some(ev);
+            }
+            self.poll_batteries();
+        }
+    }
 
-        self.handle_event(event)
+    fn poll_batteries(&mut self) {
+        if self.last_battery_check.elapsed() < BATTERY_POLL_INTERVAL {
+            return;
+        }
+        self.last_battery_check = Instant::now();
+        for (idx, gamepad) in self.gamepads.iter_mut().enumerate() {
+            if !gamepad.is_connected {
+                continue;
+            }
+            if let Some(info) = gamepad.check_battery_change() {
+                self.pending_events
+                    .push_back(Event::new(idx, EventType::BatteryChanged(info)));
+            }
+        }
     }
 
     fn handle_event(&mut self, event: Option<(Event, Option<Device>)>) -> Option<Event> {
@@ -179,6 +225,7 @@ pub struct Gamepad {
     hats: Vec<EvCode>,
     buttons: Vec<EvCode>,
     is_connected: bool,
+    last_power_info: PowerInfo,
 }
 
 impl Gamepad {
@@ -270,6 +317,7 @@ impl Gamepad {
             hats: Vec::with_capacity(4),
             buttons: Vec::with_capacity(16),
             is_connected: true,
+            last_power_info: PowerInfo::Unknown,
         };
         gamepad.collect_axes_and_buttons(&device_elements(&device));
 
@@ -343,6 +391,16 @@ impl Gamepad {
 
     pub fn power_info(&self) -> PowerInfo {
         PowerInfo::Unknown
+    }
+
+    fn check_battery_change(&mut self) -> Option<PowerInfo> {
+        let current = self.power_info();
+        if current != self.last_power_info {
+            self.last_power_info = current;
+            Some(current)
+        } else {
+            None
+        }
     }
 
     pub fn is_ff_supported(&self) -> bool {

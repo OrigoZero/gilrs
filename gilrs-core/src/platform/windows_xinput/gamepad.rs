@@ -32,6 +32,7 @@ use winapi::um::xinput::{
 // Chosen by dice roll ;)
 const EVENT_THREAD_SLEEP_TIME: u64 = 10;
 const ITERATIONS_TO_CHECK_IF_CONNECTED: u64 = 100;
+const ITERATIONS_TO_CHECK_BATTERY: u64 = 100;
 
 const MAX_XINPUT_CONTROLLERS: usize = 4;
 
@@ -115,6 +116,13 @@ impl Gilrs {
                 let mut prev_states: [XState; MAX_XINPUT_CONTROLLERS] =
                     [mem::zeroed::<XState>(); MAX_XINPUT_CONTROLLERS];
                 let mut connected = connected;
+                let mut prev_power: [PowerInfo; MAX_XINPUT_CONTROLLERS] =
+                    [PowerInfo::Unknown; MAX_XINPUT_CONTROLLERS];
+                for id in 0..MAX_XINPUT_CONTROLLERS {
+                    if connected[id] {
+                        prev_power[id] = read_power_info(&xinput_handle, id as u32);
+                    }
+                }
                 let mut counter = 0;
 
                 loop {
@@ -127,6 +135,12 @@ impl Gilrs {
                                     if !connected[id] {
                                         connected[id] = true;
                                         let _ = tx.send(Event::new(id, EventType::Connected));
+                                        prev_power[id] =
+                                            read_power_info(&xinput_handle, id as u32);
+                                        let _ = tx.send(Event::new(
+                                            id,
+                                            EventType::BatteryChanged(prev_power[id]),
+                                        ));
                                     }
 
                                     if state.dwPacketNumber != prev_states[id].dwPacketNumber {
@@ -141,10 +155,20 @@ impl Gilrs {
                                 }
                                 Err(XInputUsageError::DeviceNotConnected) if connected[id] => {
                                     connected[id] = false;
+                                    prev_power[id] = PowerInfo::Unknown;
                                     let _ = tx.send(Event::new(id, EventType::Disconnected));
                                 }
                                 Err(XInputUsageError::DeviceNotConnected) => (),
                                 Err(e) => error!("Failed to get gamepad state: {:?}", e),
+                            }
+                        }
+
+                        if connected[id] && counter % ITERATIONS_TO_CHECK_BATTERY == 0 {
+                            let current = read_power_info(&xinput_handle, id as u32);
+                            if current != prev_power[id] {
+                                prev_power[id] = current;
+                                let _ = tx
+                                    .send(Event::new(id, EventType::BatteryChanged(current)));
                             }
                         }
                     }
@@ -423,35 +447,7 @@ impl Gamepad {
     }
 
     pub fn power_info(&self) -> PowerInfo {
-        match self.xinput_handle.get_gamepad_battery_information(self.id) {
-            Ok(binfo) => match binfo.battery_type {
-                BatteryType::WIRED => PowerInfo::Wired,
-                BatteryType::ALKALINE | BatteryType::NIMH => {
-                    let lvl = match binfo.battery_level {
-                        BatteryLevel::EMPTY => 0,
-                        BatteryLevel::LOW => 33,
-                        BatteryLevel::MEDIUM => 67,
-                        BatteryLevel::FULL => 100,
-                        lvl => {
-                            trace!("Unexpected battery level: {}", lvl.0);
-
-                            100
-                        }
-                    };
-                    if lvl == 100 {
-                        PowerInfo::Charged
-                    } else {
-                        PowerInfo::Discharging(lvl)
-                    }
-                }
-                _ => PowerInfo::Unknown,
-            },
-            Err(e) => {
-                debug!("Failed to get battery info: {:?}", e);
-
-                PowerInfo::Unknown
-            }
-        }
+        read_power_info(&self.xinput_handle, self.id)
     }
 
     pub fn is_ff_supported(&self) -> bool {
@@ -480,6 +476,38 @@ impl Gamepad {
 #[inline(always)]
 fn is_mask_eq(l: u16, r: u16, mask: u16) -> bool {
     (l & mask != 0) == (r & mask != 0)
+}
+
+fn read_power_info(xinput_handle: &XInputHandle, id: u32) -> PowerInfo {
+    match xinput_handle.get_gamepad_battery_information(id) {
+        Ok(binfo) => match binfo.battery_type {
+            BatteryType::WIRED => PowerInfo::Wired,
+            BatteryType::ALKALINE | BatteryType::NIMH => {
+                let lvl = match binfo.battery_level {
+                    BatteryLevel::EMPTY => 0,
+                    BatteryLevel::LOW => 33,
+                    BatteryLevel::MEDIUM => 67,
+                    BatteryLevel::FULL => 100,
+                    lvl => {
+                        trace!("Unexpected battery level: {}", lvl.0);
+
+                        100
+                    }
+                };
+                if lvl == 100 {
+                    PowerInfo::Charged
+                } else {
+                    PowerInfo::Discharging(lvl)
+                }
+            }
+            _ => PowerInfo::Unknown,
+        },
+        Err(e) => {
+            debug!("Failed to get battery info: {:?}", e);
+
+            PowerInfo::Unknown
+        }
+    }
 }
 
 #[cfg(feature = "serde-serialize")]

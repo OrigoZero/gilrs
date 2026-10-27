@@ -21,6 +21,8 @@ use inotify::{EventMask, Inotify, WatchMask};
 use nix::errno::Errno;
 use nix::sys::epoll::{Epoll, EpollCreateFlags, EpollEvent, EpollFlags, EpollTimeout};
 use nix::sys::eventfd::{EfdFlags, EventFd};
+use nix::sys::time::TimeSpec;
+use nix::sys::timerfd::{ClockId, Expiration, TimerFd, TimerFlags, TimerSetTimeFlags};
 use std::collections::VecDeque;
 use std::error;
 use std::ffi::OsStr;
@@ -36,9 +38,11 @@ use std::path::{Path, PathBuf};
 use std::str;
 use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const HOTPLUG_DATA: u64 = u64::MAX;
+const BATTERY_DATA: u64 = u64::MAX - 1;
+const BATTERY_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Debug)]
 pub struct Gilrs {
@@ -47,6 +51,8 @@ pub struct Gilrs {
     hotplug_rx: Receiver<HotplugEvent>,
     to_check: VecDeque<usize>,
     discovery_backend: DiscoveryBackend,
+    battery_timer: TimerFd,
+    pending_events: VecDeque<Event>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -71,6 +77,25 @@ impl Gilrs {
                 EpollEvent::new(EpollFlags::EPOLLIN | EpollFlags::EPOLLET, HOTPLUG_DATA),
             )
             .map_err(|e| errno_to_platform_error(e, "adding evevntfd do epoll"))?;
+
+        let battery_timer = TimerFd::new(
+            ClockId::CLOCK_MONOTONIC,
+            TimerFlags::TFD_NONBLOCK | TimerFlags::TFD_CLOEXEC,
+        )
+        .map_err(|e| errno_to_platform_error(e, "creating battery timerfd"))?;
+        let interval = TimeSpec::from_duration(BATTERY_POLL_INTERVAL);
+        battery_timer
+            .set(
+                Expiration::Interval(interval),
+                TimerSetTimeFlags::empty(),
+            )
+            .map_err(|e| errno_to_platform_error(e, "arming battery timerfd"))?;
+        epoll
+            .add(
+                &battery_timer,
+                EpollEvent::new(EpollFlags::EPOLLIN, BATTERY_DATA),
+            )
+            .map_err(|e| errno_to_platform_error(e, "adding battery timerfd to epoll"))?;
 
         if Path::new("/.flatpak-info").exists() || std::env::var("GILRS_DISABLE_UDEV").is_ok() {
             log::debug!("Looks like we're in an environment without udev. Falling back to inotify");
@@ -136,6 +161,8 @@ impl Gilrs {
                 hotplug_rx,
                 to_check: VecDeque::new(),
                 discovery_backend: DiscoveryBackend::Inotify,
+                battery_timer,
+                pending_events: VecDeque::new(),
             });
         }
         let udev = match Udev::new() {
@@ -206,6 +233,8 @@ impl Gilrs {
             hotplug_rx,
             to_check: VecDeque::new(),
             discovery_backend: DiscoveryBackend::Udev,
+            battery_timer,
+            pending_events: VecDeque::new(),
         })
     }
 
@@ -218,76 +247,90 @@ impl Gilrs {
     }
 
     fn next_event_impl(&mut self, timeout: Option<Duration>) -> Option<Event> {
-        let mut check_hotplug = false;
-
-        if self.to_check.is_empty() {
-            let mut events = [EpollEvent::new(EpollFlags::empty(), 0); 16];
-            let timeout = if let Some(timeout) = timeout {
-                EpollTimeout::try_from(timeout).expect("timeout too large")
-            } else {
-                EpollTimeout::NONE
-            };
-
-            let n = match self.epoll.wait(&mut events, timeout) {
-                Ok(n) => n,
-                Err(e) => {
-                    error!("epoll failed: {}", e);
-                    return None;
-                }
-            };
-
-            if n == 0 {
-                return None;
+        let start = Instant::now();
+        loop {
+            if let Some(ev) = self.pending_events.pop_front() {
+                return Some(ev);
             }
 
-            for event in events {
-                if event.events().contains(EpollFlags::EPOLLIN) {
-                    if event.data() == HOTPLUG_DATA {
-                        check_hotplug = true;
-                    } else {
-                        self.to_check.push_back(event.data() as usize);
+            let mut check_hotplug = false;
+            let mut check_battery = false;
+
+            if self.to_check.is_empty() {
+                let wait_timeout = match timeout {
+                    Some(t) => {
+                        let remaining = t.saturating_sub(start.elapsed());
+                        EpollTimeout::try_from(remaining).expect("timeout too large")
+                    }
+                    None => EpollTimeout::NONE,
+                };
+
+                let mut events = [EpollEvent::new(EpollFlags::empty(), 0); 16];
+                let n = match self.epoll.wait(&mut events, wait_timeout) {
+                    Ok(n) => n,
+                    Err(e) => {
+                        error!("epoll failed: {}", e);
+                        return None;
+                    }
+                };
+
+                if n == 0 {
+                    return None;
+                }
+
+                for event in events {
+                    if event.events().contains(EpollFlags::EPOLLIN) {
+                        match event.data() {
+                            HOTPLUG_DATA => check_hotplug = true,
+                            BATTERY_DATA => check_battery = true,
+                            data => self.to_check.push_back(data as usize),
+                        }
                     }
                 }
             }
-        }
 
-        if check_hotplug {
-            if let Some(event) = self.handle_hotplug() {
-                return Some(event);
-            }
-        }
-
-        while let Some(idx) = self.to_check.front().copied() {
-            let gamepad = match self.gamepads.get_mut(idx) {
-                Some(gp) => gp,
-                None => {
-                    warn!("Somehow got invalid index from event");
-                    self.to_check.pop_front();
-                    return None;
-                }
-            };
-
-            if !gamepad.is_connected {
-                self.to_check.pop_front();
-                continue;
+            if check_battery {
+                self.handle_battery_tick();
             }
 
-            match gamepad.event() {
-                Some((event, time)) => {
-                    return Some(Event {
-                        id: idx,
-                        event,
-                        time,
-                    });
-                }
-                None => {
+            if check_hotplug {
+                self.handle_hotplug();
+            }
+
+            if let Some(ev) = self.pending_events.pop_front() {
+                return Some(ev);
+            }
+
+            while let Some(idx) = self.to_check.front().copied() {
+                let gamepad = match self.gamepads.get_mut(idx) {
+                    Some(gp) => gp,
+                    None => {
+                        warn!("Somehow got invalid index from event");
+                        self.to_check.pop_front();
+                        return None;
+                    }
+                };
+
+                if !gamepad.is_connected {
                     self.to_check.pop_front();
                     continue;
                 }
-            };
-        }
 
-        None
+                match gamepad.event() {
+                    Some((event, time)) => {
+                        return Some(Event {
+                            id: idx,
+                            event,
+                            time,
+                        });
+                    }
+                    None => {
+                        self.to_check.pop_front();
+                        continue;
+                    }
+                };
+            }
+        }
     }
 
     pub fn gamepad(&self, id: usize) -> Option<&Gamepad> {
@@ -298,7 +341,24 @@ impl Gilrs {
         self.gamepads.len()
     }
 
-    fn handle_hotplug(&mut self) -> Option<Event> {
+    fn handle_battery_tick(&mut self) {
+        if let Err(e) = self.battery_timer.wait() {
+            if e != Errno::EAGAIN {
+                error!("Failed to read battery timerfd: {}", e);
+            }
+        }
+        for (idx, gamepad) in self.gamepads.iter_mut().enumerate() {
+            if !gamepad.is_connected {
+                continue;
+            }
+            if let Some(info) = gamepad.check_battery_change() {
+                self.pending_events
+                    .push_back(Event::new(idx, EventType::BatteryChanged(info)));
+            }
+        }
+    }
+
+    fn handle_hotplug(&mut self) {
         while let Ok(event) = self.hotplug_rx.try_recv() {
             match event {
                 HotplugEvent::New { devpath, syspath } => {
@@ -313,7 +373,7 @@ impl Gilrs {
                     }
                     if let Some(gamepad) = Gamepad::open(&devpath, &syspath, self.discovery_backend)
                     {
-                        return if let Some(id) = self
+                        let (id, power) = if let Some(id) = self
                             .gamepads
                             .iter()
                             .position(|gp| gp.uuid() == gamepad.uuid && !gp.is_connected)
@@ -321,17 +381,23 @@ impl Gilrs {
                             if let Err(e) = gamepad.register_fd(&self.epoll, id as u64) {
                                 error!("Failed to add gamepad to epoll: {}", e);
                             }
+                            let power = gamepad.last_power_info;
                             self.gamepads[id] = gamepad;
-                            Some(Event::new(id, EventType::Connected))
+                            (id, power)
                         } else {
                             if let Err(e) =
                                 gamepad.register_fd(&self.epoll, self.gamepads.len() as u64)
                             {
                                 error!("Failed to add gamepad to epoll: {}", e);
                             }
+                            let power = gamepad.last_power_info;
                             self.gamepads.push(gamepad);
-                            Some(Event::new(self.gamepads.len() - 1, EventType::Connected))
+                            (self.gamepads.len() - 1, power)
                         };
+                        self.pending_events
+                            .push_back(Event::new(id, EventType::Connected));
+                        self.pending_events
+                            .push_back(Event::new(id, EventType::BatteryChanged(power)));
                     }
                 }
                 HotplugEvent::Removed(devpath) => {
@@ -346,15 +412,14 @@ impl Gilrs {
                         }
 
                         self.gamepads[id].disconnect();
-                        return Some(Event::new(id, EventType::Disconnected));
+                        self.pending_events
+                            .push_back(Event::new(id, EventType::Disconnected));
                     } else {
                         debug!("Could not find disconnected gamepad {devpath:?}");
                     }
                 }
             }
         }
-
-        None
     }
 }
 
@@ -551,6 +616,7 @@ pub struct Gamepad {
     product_id: u16,
     bt_capacity_fd: RawFd,
     bt_status_fd: RawFd,
+    last_power_info: PowerInfo,
     axes_values: VecMap<i32>,
     buttons_values: VecMap<bool>,
     events: Vec<input_event>,
@@ -610,6 +676,7 @@ impl Gamepad {
             product_id: input_id.product,
             bt_capacity_fd: cap,
             bt_status_fd: status,
+            last_power_info: PowerInfo::Unknown,
             axes_values: VecMap::new(),
             buttons_values: VecMap::new(),
             events: Vec::new(),
@@ -617,6 +684,7 @@ impl Gamepad {
             buttons: Vec::new(),
             is_connected: true,
         };
+        gamepad.last_power_info = gamepad.power_info();
 
         gamepad.collect_axes_and_buttons();
 
@@ -977,6 +1045,16 @@ impl Gamepad {
             PowerInfo::Wired
         } else {
             PowerInfo::Unknown
+        }
+    }
+
+    fn check_battery_change(&mut self) -> Option<PowerInfo> {
+        let current = self.power_info();
+        if current != self.last_power_info {
+            self.last_power_info = current;
+            Some(current)
+        } else {
+            None
         }
     }
 
