@@ -76,7 +76,7 @@ impl Gilrs {
                 &hotplug_event,
                 EpollEvent::new(EpollFlags::EPOLLIN | EpollFlags::EPOLLET, HOTPLUG_DATA),
             )
-            .map_err(|e| errno_to_platform_error(e, "adding evevntfd do epoll"))?;
+            .map_err(|e| errno_to_platform_error(e, "adding eventfd do epoll"))?;
 
         let battery_timer = TimerFd::new(
             ClockId::CLOCK_MONOTONIC,
@@ -85,10 +85,7 @@ impl Gilrs {
         .map_err(|e| errno_to_platform_error(e, "creating battery timerfd"))?;
         let interval = TimeSpec::from_duration(BATTERY_POLL_INTERVAL);
         battery_timer
-            .set(
-                Expiration::Interval(interval),
-                TimerSetTimeFlags::empty(),
-            )
+            .set(Expiration::Interval(interval), TimerSetTimeFlags::empty())
             .map_err(|e| errno_to_platform_error(e, "arming battery timerfd"))?;
         epoll
             .add(
@@ -853,7 +850,7 @@ impl Gamepad {
 
     fn event(&mut self) -> Option<(EventType, SystemTime)> {
         let mut skip = false;
-        // Skip all unknown events and return Option on first know event or when there is no more
+        // Skip all unknown events and return Option on first known event or when there are no more
         // events to read. Returning None on unknown event breaks iterators.
         loop {
             let event = self.next_event()?;

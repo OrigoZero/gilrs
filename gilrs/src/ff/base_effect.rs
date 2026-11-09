@@ -11,8 +11,8 @@ use super::time::Ticks;
 
 /// Kind of [`BaseEffect`](struct.BaseEffect.html).
 ///
-/// Currently base effect support only xinput model of force feedback, which means that  gamepad
-/// have weak and strong motor.
+/// The only effect types currently supported are from the XInput model of force feedback,
+/// which includes weak and strong gamepad motors.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 #[non_exhaustive]
 pub enum BaseEffectType {
@@ -49,7 +49,7 @@ impl Default for BaseEffectType {
 
 /// Basic building block used to create more complex force feedback effects.
 ///
-/// For each base effect you can specify it's type, for how long should it be played and it's
+/// For each base effect you can specify its type, for how long it should be played and its
 /// strength during playback.
 #[derive(Copy, Clone, PartialEq, Debug, Default)]
 pub struct BaseEffect {
@@ -77,7 +77,7 @@ impl BaseEffect {
 
 // TODO: Image with "envelope"
 #[derive(Copy, Clone, PartialEq, Debug, Default)]
-/// Envelope shaped attenuation(time) function.
+/// Envelope shaped attenuation (time) function.
 pub struct Envelope {
     pub attack_length: Ticks,
     pub attack_level: f32,
@@ -134,7 +134,7 @@ impl Replay {
         self.play_for + self.with_delay
     }
 
-    /// Returns `None` if effect hasn't started; or wrapped value
+    /// Returns `None` if effect hasn't started; or wrapped value.
     fn wrap(&self, ticks: Ticks) -> Option<Ticks> {
         ticks.checked_sub(self.after).map(|t| t % self.dur())
     }

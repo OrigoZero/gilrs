@@ -328,7 +328,7 @@ impl Mapping {
                             hat, direction, to
                         );
                     } else {
-                        // We  don't have anything like "hat" in gilrs, so let's jus assume that
+                        // We  don't have anything like "hat" in gilrs, so let's just assume that
                         // user want to map dpad axes.
                         //
                         // We have to add mappings for axes AND buttons, because axis_dpad_to_button

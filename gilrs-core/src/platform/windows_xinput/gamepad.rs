@@ -69,7 +69,7 @@ impl Gilrs {
 
     pub(crate) fn next_event(&mut self) -> Option<Event> {
         let ev = self.rx.try_recv().ok();
-        self.handle_evevnt(ev);
+        self.handle_event(ev);
 
         ev
     }
@@ -81,12 +81,12 @@ impl Gilrs {
             self.rx.recv().ok()
         };
 
-        self.handle_evevnt(ev);
+        self.handle_event(ev);
 
         ev
     }
 
-    fn handle_evevnt(&mut self, ev: Option<Event>) {
+    fn handle_event(&mut self, ev: Option<Event>) {
         if let Some(ev) = ev {
             match ev.event {
                 EventType::Connected => self.gamepads[ev.id].is_connected = true,
@@ -135,8 +135,7 @@ impl Gilrs {
                                     if !connected[id] {
                                         connected[id] = true;
                                         let _ = tx.send(Event::new(id, EventType::Connected));
-                                        prev_power[id] =
-                                            read_power_info(&xinput_handle, id as u32);
+                                        prev_power[id] = read_power_info(&xinput_handle, id as u32);
                                         let _ = tx.send(Event::new(
                                             id,
                                             EventType::BatteryChanged(prev_power[id]),
@@ -167,8 +166,7 @@ impl Gilrs {
                             let current = read_power_info(&xinput_handle, id as u32);
                             if current != prev_power[id] {
                                 prev_power[id] = current;
-                                let _ = tx
-                                    .send(Event::new(id, EventType::BatteryChanged(current)));
+                                let _ = tx.send(Event::new(id, EventType::BatteryChanged(current)));
                             }
                         }
                     }

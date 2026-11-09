@@ -12,7 +12,7 @@
 //!
 //! To use force feedback, you have to create one or more [`Effect`s](struct.Effect.html). Each
 //! `Effect` contains one or more [`BasicEffect`s](struct.BasicEffect.html) and parameters that
-//! describe effect's source, like it's position, gain or used
+//! describe effect's source, like its position, gain or used
 //! [`DistanceModel`](enum.DistanceModel.html). Final strength of effect is based on saturating sum
 //! (to `u16::MAX`) of all base effects and time from the start of playback, attenuation from
 //! distance between effect source and listener (represented by gamepad) and effect's gain.
@@ -64,9 +64,9 @@ pub(crate) use self::time::TICK_DURATION;
 pub use self::time::{Repeat, Ticks};
 
 use std::error::Error as StdError;
+use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::mpsc::{SendError, Sender};
-use std::{f32, fmt};
 
 use self::effect_source::EffectSource;
 use crate::ff::server::Message;

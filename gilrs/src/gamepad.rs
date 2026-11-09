@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 
 const DEFAULT_DEADZONE: f32 = 0.1;
 
-/// Main object responsible of managing gamepads.
+/// Main object responsible for managing gamepads.
 ///
 /// In order to get gamepad handle, use `gamepad()`, or `connected_gamepad()`. The main difference
 /// between these two is that `gamepad()` will also return handle to gamepad that is currently
@@ -155,7 +155,7 @@ impl Gilrs {
 
     /// Returns next pending event. If there is no pending event, `None` is
     /// returned. This function will not block current thread and should be safe
-    /// to call in async context. Doesn't block the thread it is run in
+    /// to call in async context. Doesn't block the thread it is run in.
     pub fn next_event(&mut self) -> Option<Event> {
         self.next_event_inner(false, None)
     }
