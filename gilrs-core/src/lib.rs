@@ -28,6 +28,114 @@ impl FfDevice {
     }
 }
 
+/// The force-feedback effects a device reports it plays: the rumble motors,
+/// and the effects it plays on the axes it drives (a steering wheel's
+/// rotation, a flight stick's two axes).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct ForceEffects {
+    /// The strong and weak rumble motors (`FF_RUMBLE` on Linux), the effect
+    /// the gamepad's force-feedback server plays.
+    pub rumble: bool,
+    /// A force of a set level pushing the axis one way.
+    pub constant: bool,
+    /// A force pulling the axis back toward a centre, growing with distance.
+    pub spring: bool,
+    /// A force resisting the axis in proportion to how fast it moves.
+    pub damper: bool,
+    /// A force resisting any movement of the axis.
+    pub friction: bool,
+}
+
+/// One kind of force-feedback effect.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ForceKind {
+    Constant,
+    Spring,
+    Damper,
+    Friction,
+}
+
+impl ForceKind {
+    /// Every kind, in a fixed order.
+    pub const ALL: [ForceKind; 4] = [
+        ForceKind::Constant,
+        ForceKind::Spring,
+        ForceKind::Damper,
+        ForceKind::Friction,
+    ];
+
+    /// Whether `effects` lists this kind.
+    pub fn listed_in(self, effects: ForceEffects) -> bool {
+        match self {
+            ForceKind::Constant => effects.constant,
+            ForceKind::Spring => effects.spring,
+            ForceKind::Damper => effects.damper,
+            ForceKind::Friction => effects.friction,
+        }
+    }
+}
+
+/// The shape of a spring, damper or friction effect on each axis the device
+/// drives.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct ForceCondition {
+    /// How strongly the effect acts, `-1..1`; a negative value pushes the
+    /// other way.
+    pub coefficient: f32,
+    /// The largest force the effect produces, `0..1` of the device's range.
+    pub saturation: f32,
+    /// Where the effect is centred along the axis, `-1..1`.
+    pub center: f32,
+    /// The width around the centre in which the effect does not act, `0..1`.
+    pub deadband: f32,
+}
+
+/// One force-feedback effect with its parameters.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum ForceEffect {
+    /// A force of `level` (`-1..1`) along the device's primary axis, the
+    /// two signs pushing opposite ways. On Linux it plays in the quarter-turn
+    /// direction (`0x4000`), the one SDL gives a steering axis.
+    Constant(f32),
+    Spring(ForceCondition),
+    Damper(ForceCondition),
+    Friction(ForceCondition),
+}
+
+impl ForceEffect {
+    /// The kind of this effect.
+    pub fn kind(&self) -> ForceKind {
+        match self {
+            ForceEffect::Constant(_) => ForceKind::Constant,
+            ForceEffect::Spring(_) => ForceKind::Spring,
+            ForceEffect::Damper(_) => ForceKind::Damper,
+            ForceEffect::Friction(_) => ForceKind::Friction,
+        }
+    }
+}
+
+/// A device's force-feedback effects, each played until it is stopped or
+/// replaced. Playing a kind that is already playing updates it in place.
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+pub struct ForceDevice {
+    inner: platform::ForceDevice,
+}
+
+#[cfg(target_os = "linux")]
+impl ForceDevice {
+    /// Play `effect`, replacing the parameters of the effect of its kind
+    /// when one is already playing.
+    pub fn play(&mut self, effect: ForceEffect) -> std::io::Result<()> {
+        self.inner.play(effect)
+    }
+
+    /// Stop the effect of `kind`, if one plays.
+    pub fn stop(&mut self, kind: ForceKind) -> std::io::Result<()> {
+        self.inner.stop(kind)
+    }
+}
+
 /// Holds information about gamepad event.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 #[non_exhaustive]
@@ -230,6 +338,12 @@ use std::path::Path;
 pub trait LinuxGamepadExt {
     /// Returns the device node of gamepad.
     fn devpath(&self) -> &Path;
+
+    /// The force-feedback effects the device reports it plays.
+    fn force_effects(&self) -> ForceEffects;
+
+    /// Open the device for force-feedback effects.
+    fn force_device(&self) -> std::io::Result<ForceDevice>;
 }
 
 #[cfg(target_os = "linux")]
@@ -237,6 +351,14 @@ impl LinuxGamepadExt for Gamepad {
     /// Returns the device node of gamepad.
     fn devpath(&self) -> &Path {
         Path::new(self.inner.devpath())
+    }
+
+    fn force_effects(&self) -> ForceEffects {
+        self.inner.force_effects()
+    }
+
+    fn force_device(&self) -> std::io::Result<ForceDevice> {
+        self.inner.force_device().map(|inner| ForceDevice { inner })
     }
 }
 
