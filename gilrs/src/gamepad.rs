@@ -235,6 +235,20 @@ impl Gilrs {
                 }) => {
                     trace!("Original event: {:?}", event);
                     let id = GamepadId(id);
+                    if let Some(data) = self.gamepads_data.get_mut(id.0) {
+                        match event_type {
+                            RawEventType::ButtonPressed(nec) => {
+                                data.raw_values.insert(Code(nec), 1);
+                            }
+                            RawEventType::ButtonReleased(nec) => {
+                                data.raw_values.insert(Code(nec), 0);
+                            }
+                            RawEventType::AxisValueChanged(val, nec) => {
+                                data.raw_values.insert(Code(nec), val);
+                            }
+                            _ => {}
+                        }
+                    }
 
                     let event = match event_type {
                         RawEventType::ButtonPressed(nec) => {
@@ -973,6 +987,32 @@ impl Gamepad<'_> {
         self.data.id
     }
 
+    /// Every axis the device reports, in the order the platform lists them.
+    /// The position of a code in this list is a stable index for that axis on
+    /// this device, whether or not a mapping names it.
+    pub fn axis_codes(&self) -> impl Iterator<Item = Code> + '_ {
+        self.inner.axes().iter().map(|nec| Code(*nec))
+    }
+
+    /// Every button the device reports, in the order the platform lists them.
+    /// The position of a code in this list is a stable index for that button
+    /// on this device, whether or not a mapping names it.
+    pub fn button_codes(&self) -> impl Iterator<Item = Code> + '_ {
+        self.inner.buttons().iter().map(|nec| Code(*nec))
+    }
+
+    /// The native range `(min, max)` the device reports for an axis.
+    pub fn axis_range(&self, axis: Code) -> Option<(i32, i32)> {
+        self.inner.axis_info(axis.0).map(|info| (info.min, info.max))
+    }
+
+    /// The device's own last reading of an element before any mapping or
+    /// filter: an axis in its native range (see [`Gamepad::axis_range`]), a
+    /// button as `0` or `1`. `None` until the device has reported it.
+    pub fn raw_value(&self, code: Code) -> Option<i32> {
+        self.data.raw_values.get(&code).copied()
+    }
+
     pub(crate) fn mapping(&self) -> &Mapping {
         &self.data.mapping
     }
@@ -989,6 +1029,14 @@ impl LinuxGamepadExt for Gamepad<'_> {
     fn devpath(&self) -> &Path {
         self.inner.devpath()
     }
+
+    fn force_effects(&self) -> gilrs_core::ForceEffects {
+        self.inner.force_effects()
+    }
+
+    fn force_device(&self) -> std::io::Result<gilrs_core::ForceDevice> {
+        self.inner.force_device()
+    }
 }
 
 #[derive(Debug)]
@@ -999,6 +1047,9 @@ pub(crate) struct GamepadData {
     id: GamepadId,
     // Flags used by the deadzone filter.
     pub(crate) have_sent_nonzero_for_axis: [bool; 6],
+    // The device's own last reading of each element, before mapping and
+    // filters: an axis in its native range, a button as 0 or 1.
+    raw_values: fnv::FnvHashMap<Code, i32>,
 }
 
 impl GamepadData {
@@ -1040,6 +1091,7 @@ impl GamepadData {
             tx,
             id,
             have_sent_nonzero_for_axis: Default::default(),
+            raw_values: Default::default(),
         }
     }
 

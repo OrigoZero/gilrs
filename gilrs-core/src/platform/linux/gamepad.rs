@@ -6,6 +6,7 @@
 // copied, modified, or distributed except according to those terms.
 
 use super::ff::Device as FfDevice;
+use super::ff::ForceDevice;
 use super::ioctl;
 use super::ioctl::{input_absinfo, input_event};
 use super::udev::*;
@@ -219,6 +220,16 @@ impl Gilrs {
 
     fn next_event_impl(&mut self, timeout: Option<Duration>) -> Option<Event> {
         let mut check_hotplug = false;
+
+        if self.to_check.is_empty() {
+            // A device's own queue (the state it held when it opened) is read
+            // without waiting for its descriptor to turn readable.
+            for (idx, gamepad) in self.gamepads.iter().enumerate() {
+                if gamepad.has_queued_events() {
+                    self.to_check.push_back(idx);
+                }
+            }
+        }
 
         if self.to_check.is_empty() {
             let mut events = [EpollEvent::new(EpollFlags::empty(), 0); 16];
@@ -544,6 +555,7 @@ pub struct Gamepad {
     fd: RawFd,
     axes_info: AxesInfo,
     ff_supported: bool,
+    force_effects: crate::ForceEffects,
     devpath: String,
     name: String,
     uuid: Uuid,
@@ -597,12 +609,14 @@ impl Gamepad {
 
         let axesi = AxesInfo::new(fd);
         let ff_supported = Self::test_ff(fd);
+        let force_effects = Self::force_effect_bits(fd);
         let (cap, status) = Self::battery_fd(syspath);
 
         let mut gamepad = Gamepad {
             fd,
             axes_info: axesi,
             ff_supported,
+            force_effects,
             devpath: path.to_string_lossy().into_owned(),
             name,
             uuid: create_uuid(input_id),
@@ -643,7 +657,53 @@ impl Gamepad {
             gamepad.axes_info
         );
 
+        gamepad.queue_current_state();
+
         Some(gamepad)
+    }
+
+    /// Queue an event for every axis's current value and every button held
+    /// when the device opened, so a reader learns where each control rests
+    /// before the device next reports a change. A pedal resting at the low
+    /// end of its range reports that position from the moment it connects.
+    fn queue_current_state(&mut self) {
+        let mut absinfo = input_absinfo::default();
+        let mut buf = [0u8; KEY_MAX as usize / 8 + 1];
+        unsafe {
+            let _ = ioctl::eviocgkey(self.fd, &mut buf);
+        }
+        let mut queued = Vec::new();
+        for axis in self.axes.iter().cloned() {
+            let value = unsafe {
+                ioctl::eviocgabs(self.fd, u32::from(axis.code), &mut absinfo);
+                absinfo.value
+            };
+            queued.push(input_event {
+                type_: EV_ABS,
+                code: axis.code,
+                value,
+                ..Default::default()
+            });
+        }
+        for btn in self.buttons.iter().cloned() {
+            if utils::test_bit(btn.code, &buf) {
+                queued.push(input_event {
+                    type_: EV_KEY,
+                    code: btn.code,
+                    value: 1,
+                    ..Default::default()
+                });
+            }
+        }
+        // `events` is drained from its end, so the queue goes in reversed to
+        // come out in device order.
+        queued.reverse();
+        self.events.extend(queued);
+    }
+
+    /// Whether events this device queued itself are waiting to be read.
+    fn has_queued_events(&self) -> bool {
+        self.is_connected && !self.events.is_empty()
     }
 
     fn register_fd(&self, epoll: &Epoll, data: u64) -> Result<(), Errno> {
@@ -717,6 +777,29 @@ impl Gamepad {
             } else {
                 false
             }
+        }
+    }
+
+    /// The force-feedback effects the device lists among its `EV_FF` bits.
+    fn force_effect_bits(fd: i32) -> crate::ForceEffects {
+        let mut ff_bits = [0u8; (FF_MAX / 8) as usize + 1];
+        let listed = unsafe {
+            ioctl::eviocgbit(
+                fd,
+                u32::from(EV_FF),
+                ff_bits.len() as i32,
+                ff_bits.as_mut_ptr(),
+            ) >= 0
+        };
+        if !listed {
+            return crate::ForceEffects::default();
+        }
+        crate::ForceEffects {
+            rumble: utils::test_bit(FF_RUMBLE, &ff_bits),
+            constant: utils::test_bit(FF_CONSTANT, &ff_bits),
+            spring: utils::test_bit(FF_SPRING, &ff_bits),
+            damper: utils::test_bit(FF_DAMPER, &ff_bits),
+            friction: utils::test_bit(FF_FRICTION, &ff_bits),
         }
     }
 
@@ -1007,6 +1090,14 @@ impl Gamepad {
         Some(self.product_id)
     }
 
+    pub fn force_effects(&self) -> crate::ForceEffects {
+        self.force_effects
+    }
+
+    pub fn force_device(&self) -> std::io::Result<ForceDevice> {
+        ForceDevice::open(&self.devpath)
+    }
+
     pub fn ff_device(&self) -> Option<FfDevice> {
         if self.is_ff_supported() {
             FfDevice::new(&self.devpath).ok()
@@ -1206,6 +1297,11 @@ const ABS_HAT2X: u16 = 0x14;
 const ABS_HAT2Y: u16 = 0x15;
 
 const FF_MAX: u16 = FF_GAIN;
+const FF_RUMBLE: u16 = 0x50;
+const FF_CONSTANT: u16 = 0x52;
+const FF_SPRING: u16 = 0x53;
+const FF_FRICTION: u16 = 0x54;
+const FF_DAMPER: u16 = 0x55;
 const FF_SQUARE: u16 = 0x58;
 const FF_TRIANGLE: u16 = 0x59;
 const FF_SINE: u16 = 0x5a;

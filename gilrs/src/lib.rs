@@ -143,5 +143,8 @@ pub use crate::gamepad::{
 
 #[cfg(target_os = "linux")]
 pub use crate::gamepad::LinuxGamepadExt;
+pub use gilrs_core::{ForceCondition, ForceEffect, ForceEffects, ForceKind};
+#[cfg(target_os = "linux")]
+pub use gilrs_core::ForceDevice;
 
 pub use crate::mapping::{MappingData as Mapping, MappingError};
